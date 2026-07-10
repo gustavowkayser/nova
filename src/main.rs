@@ -1,8 +1,10 @@
-mod parser;  
+mod lexer;  
 
 fn main() {
-    let parser = parser::parser::Parser::new();
-    let ast = parser.parse("test/api.nova").unwrap();
+    let lexer = lexer::lexer::Lexer::new();
+    let tokens = lexer.tokenize("test/api.nova").unwrap();
 
-    println!("AST: {:?}", ast);
+    for token in tokens {
+        println!("{:?}({})", token.token_type, token.value.as_ref().unwrap_or(&"".into()));
+    }
 }

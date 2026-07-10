@@ -1,14 +1,14 @@
 # Test
-http://localhost:3000 # Base URL
+http://localhost:3000
 
 # Test commentary
 
-GET /test # Endpoint = Method + Address
+GET /test
 
-POST /test # Endpoint = Method + Address
-{ # Open-bracket
-    "foo": true # Variable = Name + Value
-    "bar": 1 # Variable = Name + Value
-} # Close-bracket
+POST /test
+{
+    "foo": true
+    "bar": 1
+}
 
 http://localhost:8000
