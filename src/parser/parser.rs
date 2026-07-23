@@ -1,3 +1,5 @@
+use std::array;
+
 type ParseResult<'a, T> = Result<(T, &'a str), String>;
 pub trait Parser<'a, T> {
     fn parse(&self, input: &'a str) -> ParseResult<'a, T>;
@@ -46,7 +48,7 @@ pub fn and_then<T>(
         let result_after = parser_after.parse(new_input);
 
         if result_after.is_err() {
-            return Err(result_after.err().expect("Expeted to be string"));
+            return Err(result_after.err().expect("Expected to be string"));
         }
 
         let result_after_data = result_after.unwrap();
@@ -75,6 +77,27 @@ pub fn or_else<T>(
         let after_result = parser_after.parse(&input);
 
         return after_result;
+    };
+
+    return inner_fn;
+}
+
+// Any of
+// (list of characters) -> Parser<char>
+
+pub fn any_of(
+    list_char: Vec<char>
+) -> impl Parser<'static, char> {
+
+    let inner_fn = move |input: &'static str| -> ParseResult<char> {
+        for _char in list_char.iter().copied() {
+            let parser = parse_char(_char);
+            let result = parser.parse(input);
+
+            if result.is_ok() { return result; }
+        }
+
+        return Err("Unexpected character".to_string());
     };
 
     return inner_fn;
