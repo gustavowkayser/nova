@@ -1,104 +1,112 @@
-use std::array;
+use std::rc::Rc;
 
-type ParseResult<'a, T> = Result<(T, &'a str), String>;
-pub trait Parser<'a, T> {
-    fn parse(&self, input: &'a str) -> ParseResult<'a, T>;
+pub type ParseResult<'a, T> = Result<(T, &'a str), String>;
+
+pub struct Parser<T> {
+    parser: Rc<dyn for<'a> Fn(&'a str) -> ParseResult<'a, T>>,
 }
 
-impl<'a, T, F> Parser<'a, T> for F
-where
-    F: Fn(&'a str) -> ParseResult<'a, T>,
-{
-    fn parse(&self, input: &'a str) -> ParseResult<'a, T> {
-        self(input)
+impl<T> Clone for Parser<T> {
+    fn clone(&self) -> Self {
+        Self {
+            parser: self.parser.clone(),
+        }
     }
 }
 
-pub fn parse_char(character: char) -> impl Parser<'static, char>
-{
-    let inner_fn = move |input: &'static str| -> ParseResult<char> {
-        let input_char = input.chars().next();
-        match input_char {
-            Some(found) if found == character => Ok((character, &input[found.len_utf8()..])),
-            _ => Err(format!("Expected {character}, found {:?}", input_char.expect("Expect to be char")))
+impl<T> Parser<T> {
+    pub fn new<F>(f: F) -> Self
+    where
+        F: for<'a> Fn(&'a str) -> ParseResult<'a, T> + 'static,
+    {
+        Self {
+            parser: Rc::new(f),
         }
-    };
+    }
 
-    return inner_fn;
-}
+    pub fn parse<'a>(&self, input: &'a str) -> ParseResult<'a, T> {
+        (self.parser)(input)
+    }
 
-// And then
-// Fn(Parser<T>, Parser<T>) -> Parser<(T, T)>
+    pub fn char(expected: char) -> Parser<char> 
+    {
+        Parser::new(move |input| {
+            match input.chars().next() {
+                Some(found) if found == expected => {
+                    Ok((found, &input[found.len_utf8()..]))
+                }
+                Some(found) => Err(format!(
+                    "Expected '{}', found '{}'",
+                    expected,
+                    found
+                )),
+                None => Err(format!("Expected '{}', found EOF", expected)),
+            }
+        })
+    }
 
-pub fn and_then<T>(
-    parser_before: impl Parser<'static, T>, 
-    parser_after: impl Parser<'static, T>
-) -> impl Parser<'static, (T, T)> {
-    
-    let inner_fn = move |input: &'static str| -> ParseResult<(T, T)> {
-        let result_before = parser_before.parse(input);
+    pub fn any(expected_chars: impl IntoIterator<Item = char>) -> Parser<char>
+    {
+        let chars: Vec<char> = expected_chars.into_iter().collect();
 
-        if result_before.is_err() {
-            return Err(result_before.err().expect("Expected to be string"));
-        }
+        Parser::new(move |input| {
+            match input.chars().next() {
+                Some(c) if chars.contains(&c) => {
+                    Ok((c, &input[c.len_utf8()..]))
+                }
+                Some(c) => Err(format!("Unexpected '{}'", c)),
+                None => Err("Unexpected EOF".into()),
+            }
+        })
+    }
 
-        let result_before_data = result_before.unwrap();
+    pub fn choice<U>(parsers: impl IntoIterator<Item = Parser<U>>) -> Parser<U>
+    where
+        U: 'static
+    {
+        let parsers_col: Vec<Parser<U>> = parsers.into_iter().collect();
 
-        let new_input = result_before_data.1;
-        let result_after = parser_after.parse(new_input);
+        Parser::new(move |input| {
+            for parser in &parsers_col {
+                let result = parser.parse(input);
+                if result.is_ok() { return result; }
+            }
 
-        if result_after.is_err() {
-            return Err(result_after.err().expect("Expected to be string"));
-        }
+            return Err(format!("Unexpected input {input:?}"));
+        })
+    }
 
-        let result_after_data = result_after.unwrap();
+    pub fn then<U>(self, other: Parser<U>) -> Parser<(T, U)>
+    where
+        T: 'static,
+        U: 'static,
+    {
+        Parser::new(move |input| {
+            let (left, input) = self.parse(input)?;
+            let (right, input) = other.parse(input)?;
 
-        Ok(((result_before_data.0, result_after_data.0), result_after_data.1))
-    };
+            Ok(((left, right), input))
+        })
+    }
 
-    return inner_fn;
-}
+    pub fn or(self, other: Parser<T>) -> Parser<T>
+    where
+        T: 'static,
+    {
+        Parser::new(move |input| {
+            self.parse(input).or_else(|_| other.parse(input))
+        })
+    }
 
-// Or else
-// (Parser<T>, Parser<T>) -> Parser<T>
-
-pub fn or_else<T>(
-    parser_before: impl Parser<'static, T>,
-    parser_after: impl Parser<'static, T>
-) -> impl Parser<'static, T> {
-
-    let inner_fn = move |input: &'static str| -> ParseResult<T> {
-        let before_result = parser_before.parse(&input);
-
-        if before_result.is_ok() {
-            return before_result;
-        }
-
-        let after_result = parser_after.parse(&input);
-
-        return after_result;
-    };
-
-    return inner_fn;
-}
-
-// Any of
-// (list of characters) -> Parser<char>
-
-pub fn any_of(
-    list_char: Vec<char>
-) -> impl Parser<'static, char> {
-
-    let inner_fn = move |input: &'static str| -> ParseResult<char> {
-        for _char in list_char.iter().copied() {
-            let parser = parse_char(_char);
-            let result = parser.parse(input);
-
-            if result.is_ok() { return result; }
-        }
-
-        return Err("Unexpected character".to_string());
-    };
-
-    return inner_fn;
+    pub fn map<U, F>(self, mapper: F) -> Parser<U>
+    where
+        T: 'static,
+        U: 'static,
+        F: Fn(T) -> U + 'static,
+    {
+        Parser::new(move |input| {
+            let (value, input) = self.parse(input)?;
+            Ok((mapper(value), input))
+        })
+    }
 }
