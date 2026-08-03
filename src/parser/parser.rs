@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{collections::LinkedList, rc::Rc};
 
 pub type ParseResult<'a, T> = Result<(T, &'a str), String>;
 
@@ -45,6 +45,22 @@ impl<T> Parser<T> {
         })
     }
 
+    pub fn string(expected: String) -> Parser<String>
+    {
+        fn char_list_to_string(
+            expected_chars: impl IntoIterator<Item = char>
+        ) -> String {
+            expected_chars.into_iter().collect()
+        }
+
+        let list_chars: Vec<char> = expected.chars().collect();
+        let list_pchars = list_chars.iter().map(|expected: &char| { Parser::<char>::char(*expected) } );
+        let sequence = Parser::<char>::sequence(list_pchars);
+        let parser_string = sequence.map(char_list_to_string);
+
+        return parser_string;
+    }
+
     pub fn any(expected_chars: impl IntoIterator<Item = char>) -> Parser<char>
     {
         let chars: Vec<char> = expected_chars.into_iter().collect();
@@ -74,6 +90,49 @@ impl<T> Parser<T> {
 
             return Err(format!("Unexpected input {input:?}"));
         })
+    }
+
+    pub fn returnp<U>(value: U) -> Parser<U>
+    where
+        U: Clone + 'static
+    {
+        Parser::new(move |input| {
+            Ok((value.clone(), input))
+        })
+    }
+
+    pub fn lift2<A, B, C, F>(
+        func: F,
+        a: Parser<A>,
+        b: Parser<B>,
+    ) -> Parser<C>
+    where
+        A: 'static,
+        B: 'static,
+        C: 'static,
+        F: Fn((A, B)) -> C + Clone + 'static,
+    {
+        a.then(b).map(func)
+    }
+
+    pub fn sequence<U>(parsers: impl IntoIterator<Item = Parser<U>>) -> Parser<LinkedList<U>>
+    where 
+        U: Clone + 'static
+    {
+        fn cons<U>(mut tuple: (U, LinkedList<U>)) -> LinkedList<U> {
+            tuple.1.push_front(tuple.0);
+            tuple.1
+        }
+
+        let parsers_iter: Vec<Parser<U>> = parsers.into_iter().collect();
+
+        match parsers_iter.first() {
+            Some(head) => {
+                let tail = parsers_iter[1..].iter().cloned().collect::<Vec<_>>();
+                Parser::<U>::lift2(cons, head.clone(), Parser::<U>::sequence(tail))
+            }
+            None => Parser::<U>::returnp(LinkedList::new()),
+        }
     }
 
     pub fn then<U>(self, other: Parser<U>) -> Parser<(T, U)>
