@@ -61,6 +61,37 @@ impl<T> Parser<T> {
         return parser_string;
     }
 
+    pub fn int() -> Parser<i64>
+    {
+        fn result_to_int(args: (Option<char>, Vec<char>)) -> i64 {
+            let string: String = args.1.into_iter().collect();
+            let mut num: i64 = string.parse().unwrap();
+
+            match args.0 {
+                Some(_char) => { num = -num; }
+                None => { }
+            }
+
+            return num;
+        }
+
+        let digit = Parser::<char>::any("1234567890".chars());
+
+        let digits = digit.many1();
+        let sign_parser = Parser::<char>::opt(Parser::<char>::char('-'));
+        
+        return sign_parser.then(digits).map(result_to_int);
+    }
+
+    pub fn opt<A>(parser: Parser<A>) -> Parser<Option<A>>
+    where 
+        A: Clone + 'static,
+    {
+        let some = parser.map(Some);
+        let none = Parser::<A>::returnp(None);
+        return some.or(none);
+    }
+
     pub fn many(self) -> Parser<Vec<T>>
     where 
         T: 'static
