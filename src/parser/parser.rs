@@ -1,6 +1,57 @@
-use std::{collections::LinkedList, rc::Rc};
+use std::{collections::LinkedList, error::Error, fmt, rc::Rc};
 
-pub type ParseResult<'a, T> = Result<(T, &'a str), String>;
+pub type ParseResult<'a, T> = Result<(T, &'a str), ParseError>;
+
+/// A parse failure, tagged with how far into the input it happened.
+///
+/// The position is what lets `or` and `choice` report the most useful of
+/// several failures: the branch that consumed the most input before failing
+/// is almost always the one the author intended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseError {
+    pub message: String,
+    /// Bytes of input still unconsumed at the point of failure. Fewer bytes
+    /// left means the parser got further.
+    pub remaining: usize,
+}
+
+impl ParseError {
+    /// Records a failure at the start of `remaining_input`.
+    pub fn new(remaining_input: &str, message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            remaining: remaining_input.len(),
+        }
+    }
+
+    /// Keeps whichever of two failures got further through the input,
+    /// preferring `self` when they tie.
+    pub fn best(self, other: Self) -> Self {
+        if other.remaining < self.remaining { other } else { self }
+    }
+
+    /// Byte offset of the failure within `input`, for reporting a location.
+    /// `input` must be the whole text originally handed to the parser.
+    pub fn position(&self, input: &str) -> usize {
+        input.len().saturating_sub(self.remaining)
+    }
+}
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.message)
+    }
+}
+
+impl Error for ParseError {}
+
+/// Names whatever comes next in `input`, for use in error messages.
+fn describe_next(input: &str) -> String {
+    match input.chars().next() {
+        Some(found) => format!("'{}'", found),
+        None => "EOF".to_string(),
+    }
+}
 
 pub struct Parser<T> {
     parser: Rc<dyn for<'a> Fn(&'a str) -> ParseResult<'a, T>>,
@@ -28,21 +79,12 @@ impl<T> Parser<T> {
         (self.parser)(input)
     }
 
-    pub fn char(expected: char) -> Parser<char> 
+    pub fn char(expected: char) -> Parser<char>
     {
-        Parser::new(move |input| {
-            match input.chars().next() {
-                Some(found) if found == expected => {
-                    Ok((found, &input[found.len_utf8()..]))
-                }
-                Some(found) => Err(format!(
-                    "Expected '{}', found '{}'",
-                    expected,
-                    found
-                )),
-                None => Err(format!("Expected '{}', found EOF", expected)),
-            }
-        })
+        Parser::<char>::satisfy(
+            move |found| found == expected,
+            format!("'{}'", expected),
+        )
     }
 
     pub fn string(expected: String) -> Parser<String>
@@ -178,14 +220,31 @@ impl<T> Parser<T> {
     pub fn any(expected_chars: impl IntoIterator<Item = char>) -> Parser<char>
     {
         let chars: Vec<char> = expected_chars.into_iter().collect();
+        let description = format!("one of {:?}", chars.iter().collect::<String>());
+
+        Parser::<char>::satisfy(move |found| chars.contains(&found), description)
+    }
+
+    /// Matches a single character satisfying `predicate`.
+    ///
+    /// Use this where the accepted set is easier to describe by rule than by
+    /// listing it out, e.g. "any character except a quote". `description`
+    /// names the expected input in the error message.
+    pub fn satisfy<F>(predicate: F, description: impl Into<String>) -> Parser<char>
+    where
+        F: Fn(char) -> bool + 'static,
+    {
+        let description = description.into();
 
         Parser::new(move |input| {
             match input.chars().next() {
-                Some(c) if chars.contains(&c) => {
+                Some(c) if predicate(c) => {
                     Ok((c, &input[c.len_utf8()..]))
                 }
-                Some(c) => Err(format!("Unexpected '{}'", c)),
-                None => Err("Unexpected EOF".into()),
+                _ => Err(ParseError::new(
+                    input,
+                    format!("Expected {}, found {}", description, describe_next(input)),
+                )),
             }
         })
     }
@@ -217,12 +276,23 @@ impl<T> Parser<T> {
         let parsers_col: Vec<Parser<U>> = parsers.into_iter().collect();
 
         Parser::new(move |input| {
+            let mut best_error: Option<ParseError> = None;
+
             for parser in &parsers_col {
-                let result = parser.parse(input);
-                if result.is_ok() { return result; }
+                match parser.parse(input) {
+                    Ok(success) => { return Ok(success); }
+                    Err(error) => {
+                        best_error = Some(match best_error {
+                            Some(previous) => previous.best(error),
+                            None => error,
+                        });
+                    }
+                }
             }
 
-            return Err(format!("Unexpected input {input:?}"));
+            return Err(best_error.unwrap_or_else(|| {
+                ParseError::new(input, "No alternatives to choose from")
+            }));
         })
     }
 
@@ -233,6 +303,14 @@ impl<T> Parser<T> {
         Parser::new(move |input| {
             Ok((value.clone(), input))
         })
+    }
+
+    pub fn apply_return<U>(self, value: U) -> Parser<U>
+    where 
+        T: 'static,
+        U: Clone + 'static
+    {
+        return self.map(move |a| { return value.clone(); });
     }
 
     pub fn lift2<A, B, C, F>(
@@ -287,7 +365,33 @@ impl<T> Parser<T> {
         T: 'static,
     {
         Parser::new(move |input| {
-            self.parse(input).or_else(|_| other.parse(input))
+            match self.parse(input) {
+                Ok(success) => Ok(success),
+                Err(first) => other.parse(input).map_err(|second| first.best(second)),
+            }
+        })
+    }
+
+    /// Renames what this parser expects, for error messages.
+    ///
+    /// The new description only replaces the failure when nothing was
+    /// consumed. Once a parser has committed to a branch, the deeper and more
+    /// specific failure is the useful one, so it is left alone.
+    pub fn label(self, description: impl Into<String>) -> Parser<T>
+    where
+        T: 'static,
+    {
+        let description = description.into();
+
+        Parser::new(move |input| {
+            self.parse(input).map_err(|error| {
+                if error.remaining < input.len() { return error; }
+
+                ParseError::new(
+                    input,
+                    format!("Expected {}, found {}", description, describe_next(input)),
+                )
+            })
         })
     }
 
