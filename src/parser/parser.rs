@@ -61,6 +61,41 @@ impl<T> Parser<T> {
         return parser_string;
     }
 
+    pub fn many(self) -> Parser<Vec<T>>
+    where 
+        T: 'static
+    {
+        return Parser::<Vec<T>>::new(move |input| {
+            Ok(Parser::<T>::parse_zero_or_more(self.clone(), input))
+        });
+    }
+
+    pub fn many1(self) -> Parser<Vec<T>>
+    where 
+        T: 'static
+    {
+        return Parser::<Vec<T>>::new(move |input| {
+            let first_result = self.parse(input);
+
+            match first_result {
+                Ok(success) => {
+                    let first_value = success.0;
+                    let after_first = success.1;
+
+                    let (mut subsequent_values, remaining) = 
+                    Parser::<T>::parse_zero_or_more(self.clone(), after_first);
+
+                    subsequent_values.insert(0, first_value);
+
+                    Ok((subsequent_values, remaining))
+                }
+                Err(error) => {
+                    Err(error)
+                }
+            }
+        });
+    }
+
     pub fn any(expected_chars: impl IntoIterator<Item = char>) -> Parser<char>
     {
         let chars: Vec<char> = expected_chars.into_iter().collect();
@@ -74,6 +109,26 @@ impl<T> Parser<T> {
                 None => Err("Unexpected EOF".into()),
             }
         })
+    }
+
+    fn parse_zero_or_more<U>(parser: Parser<U>, input: &str) -> (Vec<U>, &str)
+    {
+        let first_result = parser.parse(input);
+
+        match first_result {
+            Ok(success) => {
+                let first_value = success.0;
+                let input_after_first = success.1;
+
+                let (mut subsequent_values, remaining) = Parser::<T>::parse_zero_or_more(parser, input_after_first);
+                subsequent_values.insert(0, first_value);
+
+                return (subsequent_values, remaining);
+            }
+            Err(_error) => {
+                return (Vec::new(), input);
+            }
+        }
     }
 
     pub fn choice<U>(parsers: impl IntoIterator<Item = Parser<U>>) -> Parser<U>
