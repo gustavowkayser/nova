@@ -127,6 +127,54 @@ impl<T> Parser<T> {
         });
     }
 
+    pub fn ignore_left<A>(self: Parser<T>, other: Parser<A>) -> Parser<A>
+    where
+        A: 'static,
+        T: 'static,
+    {
+        let both = self.then(other);
+        return both.map( |(_a, b)| { return b; });
+    }
+
+    pub fn ignore_right<A>(self: Parser<T>, other: Parser<A>) -> Parser<T>
+    where
+        A: 'static,
+        T: 'static,
+    {
+        let both = self.then(other);
+        return both.map( |(a, _b)| { return a; });
+    }
+
+    pub fn between<A, B, C>(parser1: Parser<A>, parser2: Parser<B>, parser3: Parser<C>) -> Parser<B>
+    where 
+        A: 'static,
+        B: 'static,
+        C: 'static,
+    {
+        return parser1.ignore_left(parser2).ignore_right(parser3);
+    }
+
+    pub fn sep_by1<A>(self, separator: Parser<A>) -> Parser<Vec<T>>
+    where 
+        A: 'static,
+        T: 'static,
+    {
+        let sep_then = separator.ignore_left(self.clone());
+
+        return self.then(sep_then.many()).map(|(value, mut list)| { 
+            list.insert(0, value);
+            return list;
+        });
+    }
+
+    pub fn sep_by<A>(self, separator: Parser<A>) -> Parser<Vec<T>>
+    where
+        A: 'static,
+        T: Clone + 'static,
+    {
+        return self.sep_by1(separator).or(Parser::<Vec<T>>::returnp(Vec::<T>::new()));
+    }
+
     pub fn any(expected_chars: impl IntoIterator<Item = char>) -> Parser<char>
     {
         let chars: Vec<char> = expected_chars.into_iter().collect();
