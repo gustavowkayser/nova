@@ -63,6 +63,37 @@ pub fn blank_lines() -> Parser<()> {
     blank().many().apply_return(())
 }
 
+/// An identifier: a letter or underscore, then letters, digits, underscores
+/// and dashes.
+pub fn ident() -> Parser<String> {
+    let first = Parser::<char>::satisfy(
+        |found| found.is_ascii_alphabetic() || found == '_',
+        "an identifier",
+    );
+    let rest = Parser::<char>::satisfy(
+        |found| found.is_ascii_alphanumeric() || found == '_' || found == '-',
+        "an identifier character",
+    )
+    .many();
+
+    first.then(rest).map(|(head, tail)| {
+        let mut name = String::from(head);
+        name.extend(tail);
+        return name;
+    })
+}
+
+/// A header field name. Looser than [`ident`] because HTTP header names may
+/// begin with a digit.
+pub fn header_name() -> Parser<String> {
+    Parser::<char>::satisfy(
+        |found| found.is_ascii_alphanumeric() || found == '_' || found == '-',
+        "a header name",
+    )
+    .many1()
+    .map(|found: Vec<char>| found.into_iter().collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +132,27 @@ mod tests {
     fn blank_lines_eat_empty_and_comment_only_lines() {
         assert_eq!(blank_lines().parse("\n\n  \n// c\nrest"), Ok(((), "rest")));
         assert_eq!(blank_lines().parse("rest"), Ok(((), "rest")));
+    }
+
+    #[test]
+    fn ident_accepts_letters_digits_underscores_and_dashes() {
+        assert_eq!(ident().parse("accessToken "), Ok(("accessToken".to_string(), " ")));
+        assert_eq!(ident().parse("user_id."), Ok(("user_id".to_string(), ".")));
+        assert_eq!(ident().parse("get-user)"), Ok(("get-user".to_string(), ")")));
+        assert_eq!(ident().parse("_private"), Ok(("_private".to_string(), "")));
+    }
+
+    #[test]
+    fn ident_rejects_a_leading_digit_or_dash() {
+        assert!(ident().parse("1abc").is_err());
+        assert!(ident().parse("-abc").is_err());
+        assert!(ident().parse("").is_err());
+    }
+
+    #[test]
+    fn header_name_allows_a_leading_digit() {
+        assert_eq!(header_name().parse("Content-Type:"), Ok(("Content-Type".to_string(), ":")));
+        assert_eq!(header_name().parse("X-2-Header:"), Ok(("X-2-Header".to_string(), ":")));
+        assert!(header_name().parse(":").is_err());
     }
 }
