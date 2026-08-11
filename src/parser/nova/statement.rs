@@ -2,6 +2,7 @@ use crate::parser::nova::ast::*;
 use crate::parser::nova::lex::{
     blank_lines, eol, header_name, hspace, hspace1, ident, reference, template,
 };
+use crate::parser::nova::value::{body, NovaValue};
 use crate::parser::parser::{ParseError, Parser};
 
 /// One statement, tagged with where it started.
@@ -11,8 +12,14 @@ use crate::parser::parser::{ParseError, Parser};
 /// [`super::parse_nova`] converts these to real offsets once it knows the
 /// total length.
 pub fn statement() -> Parser<Statement> {
-    let kind = Parser::<StatementKind>::choice(vec![host(), headers(), command(), assign()])
-        .label("a Nova statement");
+    let kind = Parser::<StatementKind>::choice(vec![
+        host(),
+        headers(),
+        command(),
+        assign(),
+        request(),
+    ])
+    .label("a Nova statement");
 
     return Parser::<Statement>::new(move |input| {
         let remaining_at_start = input.len();
@@ -48,6 +55,97 @@ fn header_line() -> Parser<Header> {
         .then(template().label("a header value"))
         .ignore_right(eol())
         .map(|(name, value)| Header { name, value });
+}
+
+/// A request: an optional label line, a method-and-path line, an optional body.
+///
+/// Tied with a lazy knot because the body parser is itself recursive.
+fn request() -> Parser<StatementKind> {
+    return Parser::<StatementKind>::new(|input| request_impl().parse(input));
+}
+
+fn request_impl() -> Parser<StatementKind> {
+    let labelled = label().ignore_right(eol()).ignore_right(blank_lines());
+    let body_line = body().ignore_right(eol());
+
+    return Parser::<(String, Option<String>)>::opt(labelled)
+        .then(request_line())
+        .then(Parser::<NovaValue>::opt(body_line))
+        .map(|((label, (method, path)), body)| {
+            let (name, command) = match label {
+                Some((name, command)) => (Some(name), command),
+                None => (None, None),
+            };
+
+            return StatementKind::Request(Request { name, command, method, path, body });
+        });
+}
+
+/// `@login` or `@login.auth`.
+fn label() -> Parser<(String, Option<String>)> {
+    let tag = Parser::<String>::opt(Parser::<char>::char('.').ignore_left(ident()));
+
+    return Parser::<char>::char('@')
+        .ignore_left(request_ident())
+        .then(tag)
+        .ignore_right(no_further_segment());
+}
+
+/// A request name, rejecting the words the grammar reserves for blocks.
+/// Without this, `@env` would be read as a request label.
+fn request_ident() -> Parser<String> {
+    const RESERVED: [&str; 4] = ["host", "header", "assert", "env"];
+
+    return Parser::<String>::new(|input| {
+        let (found, remaining) = ident().parse(input)?;
+
+        if RESERVED.contains(&found.as_str()) {
+            return Err(ParseError::new(
+                input,
+                format!("{found:?} is reserved and cannot name a request"),
+            ));
+        }
+
+        return Ok((found, remaining));
+    });
+}
+
+fn no_further_segment() -> Parser<()> {
+    return Parser::<()>::new(|input| {
+        if input.starts_with('.') {
+            return Err(ParseError::new(
+                input,
+                "A request label takes a name and an optional command",
+            ));
+        }
+
+        return Ok(((), input));
+    });
+}
+
+fn request_line() -> Parser<(Method, Template)> {
+    return method()
+        .ignore_right(hspace1())
+        .then(template().label("a request path"))
+        .ignore_right(eol());
+}
+
+fn method() -> Parser<Method> {
+    let verbs = vec![
+        verb("GET", Method::Get),
+        verb("POST", Method::Post),
+        verb("PUT", Method::Put),
+        verb("PATCH", Method::Patch),
+        verb("DELETE", Method::Delete),
+        verb("HEAD", Method::Head),
+        verb("OPTIONS", Method::Options),
+    ];
+
+    return Parser::<Method>::choice(verbs).label("an HTTP method");
+}
+
+fn verb(word: &'static str, method: Method) -> Parser<Method> {
+    return Parser::<char>::string(word.to_string()).apply_return(method);
 }
 
 fn command() -> Parser<StatementKind> {
@@ -221,5 +319,92 @@ mod tests {
                 value: at(&["env", "TOKEN"]),
             })
         );
+    }
+
+    #[test]
+    fn parses_an_unlabelled_request() {
+        assert_eq!(
+            kind("GET /me\n"),
+            StatementKind::Request(Request {
+                name: None,
+                command: None,
+                method: Method::Get,
+                path: literal("/me"),
+                body: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parses_a_labelled_request_with_a_body() {
+        assert_eq!(
+            kind("@login\nPOST /login\n{ \"a\": 1 }\n"),
+            StatementKind::Request(Request {
+                name: Some("login".to_string()),
+                command: None,
+                method: Method::Post,
+                path: literal("/login"),
+                body: Some(NovaValue::Object(vec![(
+                    "a".to_string(),
+                    NovaValue::Number(1.0)
+                )])),
+            })
+        );
+    }
+
+    #[test]
+    fn a_dotted_label_carries_a_command_tag() {
+        assert_eq!(
+            kind("@login.auth\nPOST /login\n"),
+            StatementKind::Request(Request {
+                name: Some("login".to_string()),
+                command: Some("auth".to_string()),
+                method: Method::Post,
+                path: literal("/login"),
+                body: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parses_every_method() {
+        assert_eq!(method().parse("GET "), Ok((Method::Get, " ")));
+        assert_eq!(method().parse("POST "), Ok((Method::Post, " ")));
+        assert_eq!(method().parse("PUT "), Ok((Method::Put, " ")));
+        assert_eq!(method().parse("PATCH "), Ok((Method::Patch, " ")));
+        assert_eq!(method().parse("DELETE "), Ok((Method::Delete, " ")));
+        assert_eq!(method().parse("HEAD "), Ok((Method::Head, " ")));
+        assert_eq!(method().parse("OPTIONS "), Ok((Method::Options, " ")));
+    }
+
+    #[test]
+    fn methods_are_uppercase_only() {
+        assert!(statement().parse("get /me\n").is_err());
+    }
+
+    #[test]
+    fn a_label_may_not_use_a_reserved_word() {
+        assert!(statement().parse("@env\nGET /me\n").is_err());
+    }
+
+    #[test]
+    fn a_label_may_not_have_three_segments() {
+        assert!(statement().parse("@login.auth.extra\nPOST /x\n").is_err());
+    }
+
+    /// A body is optional, so the parser has to peek past the blank line to
+    /// decide whether one is there. It must not mistake the next statement for
+    /// one. The separating newline is left behind for `parse_nova` to consume.
+    #[test]
+    fn a_following_statement_is_not_swallowed_as_a_body() {
+        let (parsed, remaining) = statement()
+            .parse("GET /me\n\n@assert.me.hasField [ \"email\" ]\n")
+            .expect("statement should parse");
+
+        match parsed.kind {
+            StatementKind::Request(request) => assert_eq!(request.body, None),
+            other => panic!("expected a request, got {other:?}"),
+        }
+        assert_eq!(remaining, "\n@assert.me.hasField [ \"email\" ]\n");
     }
 }
