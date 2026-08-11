@@ -1,5 +1,7 @@
 use crate::parser::nova::ast::*;
-use crate::parser::nova::lex::{blank_lines, eol, header_name, hspace, ident, template};
+use crate::parser::nova::lex::{
+    blank_lines, eol, header_name, hspace, hspace1, ident, reference, template,
+};
 use crate::parser::parser::{ParseError, Parser};
 
 /// One statement, tagged with where it started.
@@ -9,7 +11,7 @@ use crate::parser::parser::{ParseError, Parser};
 /// [`super::parse_nova`] converts these to real offsets once it knows the
 /// total length.
 pub fn statement() -> Parser<Statement> {
-    let kind = Parser::<StatementKind>::choice(vec![host(), headers()])
+    let kind = Parser::<StatementKind>::choice(vec![host(), headers(), command(), assign()])
         .label("a Nova statement");
 
     return Parser::<Statement>::new(move |input| {
@@ -46,6 +48,29 @@ fn header_line() -> Parser<Header> {
         .then(template().label("a header value"))
         .ignore_right(eol())
         .map(|(name, value)| Header { name, value });
+}
+
+fn command() -> Parser<StatementKind> {
+    let parameter = hspace1().ignore_left(ident());
+
+    return Parser::<char>::char('#')
+        .ignore_left(exact_ident("command"))
+        .ignore_left(hspace1())
+        .ignore_left(ident().label("a command name"))
+        .then(parameter.many())
+        .ignore_right(eol())
+        .map(|(name, parameters)| StatementKind::Command(Command { name, parameters }));
+}
+
+fn assign() -> Parser<StatementKind> {
+    return Parser::<char>::char('@')
+        .ignore_left(ident())
+        .ignore_right(hspace())
+        .ignore_right(Parser::<char>::char('='))
+        .ignore_right(hspace())
+        .then(reference().label("a reference"))
+        .ignore_right(eol())
+        .map(|(name, value)| StatementKind::Assign(Assign { name, value }));
 }
 
 /// `@word`, where the word must match exactly — so `@hostname` is not read as
@@ -155,5 +180,46 @@ mod tests {
             .expect("statement should parse");
 
         assert_eq!(remaining, "GET /me\n");
+    }
+
+    #[test]
+    fn parses_a_command_declaration() {
+        assert_eq!(
+            kind("#command auth email password\n"),
+            StatementKind::Command(Command {
+                name: "auth".to_string(),
+                parameters: vec!["email".to_string(), "password".to_string()],
+            })
+        );
+    }
+
+    #[test]
+    fn a_command_may_take_no_parameters() {
+        assert_eq!(
+            kind("#command smoke\n"),
+            StatementKind::Command(Command { name: "smoke".to_string(), parameters: vec![] })
+        );
+    }
+
+    #[test]
+    fn parses_a_variable_assignment() {
+        assert_eq!(
+            kind("@accessToken = @login.response.body.accessToken\n"),
+            StatementKind::Assign(Assign {
+                name: "accessToken".to_string(),
+                value: at(&["login", "response", "body", "accessToken"]),
+            })
+        );
+    }
+
+    #[test]
+    fn an_assignment_tolerates_tight_spacing() {
+        assert_eq!(
+            kind("@token=@env.TOKEN\n"),
+            StatementKind::Assign(Assign {
+                name: "token".to_string(),
+                value: at(&["env", "TOKEN"]),
+            })
+        );
     }
 }
