@@ -100,4 +100,35 @@ mod tests {
         assert_eq!(line_column(source, 6), (2, 1));
         assert_eq!(line_column(source, 9), (2, 4));
     }
+
+    fn error_for(input: &str) -> String {
+        return parse_nova(input).expect_err("input should not parse").message;
+    }
+
+    #[test]
+    fn errors_name_the_construct_that_failed() {
+        assert!(error_for("get /me\n").contains("HTTP method"), "{}", error_for("get /me\n"));
+        assert!(
+            error_for("@login.auth.extra\nPOST /x\n").contains("name and an optional command"),
+            "{}",
+            error_for("@login.auth.extra\nPOST /x\n")
+        );
+        assert!(
+            error_for("@assert.me.nonsense\na: 1\n").contains("assertion mode"),
+            "{}",
+            error_for("@assert.me.nonsense\na: 1\n")
+        );
+        assert!(error_for("@\nGET /x\n").contains("identifier"), "{}", error_for("@\nGET /x\n"));
+        assert!(
+            error_for("POST /x\n{ \"a\": 1\n").contains('}'),
+            "{}",
+            error_for("POST /x\n{ \"a\": 1\n")
+        );
+        assert_eq!(error_for("GET /me\n!!!\n"), "Expected end of input");
+    }
+
+    #[test]
+    fn a_reserved_word_cannot_name_a_request() {
+        assert!(error_for("@env\nGET /me\n").contains("reserved"), "{}", error_for("@env\nGET /me\n"));
+    }
 }

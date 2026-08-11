@@ -2,7 +2,7 @@ use crate::parser::nova::ast::*;
 use crate::parser::nova::lex::{
     blank_lines, eol, header_name, hspace, hspace1, ident, reference, template,
 };
-use crate::parser::nova::value::{body, line_value, string_array, NovaValue};
+use crate::parser::nova::value::{body, line_value, starts_body, string_array, NovaValue};
 use crate::parser::parser::{ParseError, Parser};
 
 /// One statement, tagged with where it started.
@@ -12,15 +12,25 @@ use crate::parser::parser::{ParseError, Parser};
 /// [`super::parse_nova`] converts these to real offsets once it knows the
 /// total length.
 pub fn statement() -> Parser<Statement> {
+    // `request` goes first for the sake of error messages, not correctness.
+    // Every alternative fails at offset zero on input that starts no statement
+    // at all, and `choice` keeps the earliest of equally-deep failures — so
+    // whichever branch leads decides the message. "Expected an HTTP method" is
+    // the most actionable of them. It is safe to lead with the most permissive
+    // form because the reserved words (`host`, `header`, `assert`, `env`) are
+    // what stop a label from swallowing the block forms.
+    //
+    // Deliberately unlabelled: `label` replaces any failure that consumed
+    // nothing, which is precisely this case, and "Expected a Nova statement"
+    // is less useful than the branch's own error.
     let kind = Parser::<StatementKind>::choice(vec![
+        request(),
         host(),
         headers(),
         command(),
         assert(),
         assign(),
-        request(),
-    ])
-    .label("a Nova statement");
+    ]);
 
     return Parser::<Statement>::new(move |input| {
         let remaining_at_start = input.len();
@@ -150,9 +160,37 @@ fn request_impl() -> Parser<StatementKind> {
     let labelled = label().ignore_right(eol()).ignore_right(blank_lines());
     let body_line = body().ignore_right(eol());
 
-    return Parser::<(String, Option<String>)>::opt(labelled)
+    // Once a line starts with `@` it must be a label — there is no other way
+    // for a request to begin that way. Committing matters for error quality:
+    // wrapping this in `opt` would discard a malformed label's failure and
+    // backtrack to offset zero, leaving the useless "expected an HTTP method"
+    // in its place. Other `@` forms are unaffected, since `choice` still goes
+    // on to try them.
+    let prefix = Parser::<Option<(String, Option<String>)>>::new(move |input| {
+        if !input.starts_with('@') {
+            return Ok((None, input));
+        }
+
+        let (found, remaining) = labelled.parse(input)?;
+
+        return Ok((Some(found), remaining));
+    });
+
+    // Committed for the same reason as the label: `opt` would turn "this body
+    // is missing its closing brace" into "there was no body here".
+    let optional_body = Parser::<Option<NovaValue>>::new(move |input| {
+        if !starts_body(input) {
+            return Ok((None, input));
+        }
+
+        let (found, remaining) = body_line.parse(input)?;
+
+        return Ok((Some(found), remaining));
+    });
+
+    return prefix
         .then(request_line())
-        .then(Parser::<NovaValue>::opt(body_line))
+        .then(optional_body)
         .map(|((label, (method, path)), body)| {
             let (name, command) = match label {
                 Some((name, command)) => (Some(name), command),
@@ -182,8 +220,12 @@ fn request_ident() -> Parser<String> {
         let (found, remaining) = ident().parse(input)?;
 
         if RESERVED.contains(&found.as_str()) {
+            // Reported at `remaining`, not `input`: the identifier really was
+            // consumed before being rejected, so this is how far the parser
+            // got. That also lets the message outrank `assign`'s shallower
+            // "expected '='" when both branches fail on `@env`.
             return Err(ParseError::new(
-                input,
+                remaining,
                 format!("{found:?} is reserved and cannot name a request"),
             ));
         }

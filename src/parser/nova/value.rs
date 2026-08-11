@@ -25,6 +25,19 @@ pub fn body() -> Parser<NovaValue> {
     return whitespace().ignore_left(object().or(array()));
 }
 
+/// Whether a body begins here, once insignificant whitespace and comments are
+/// skipped.
+///
+/// Lets a caller commit to parsing a body rather than wrapping [`body`] in
+/// `opt`, which would swallow the real failure inside an unterminated one and
+/// backtrack as though no body had been written at all.
+pub fn starts_body(input: &str) -> bool {
+    return match whitespace().parse(input) {
+        Ok((_skipped, rest)) => rest.starts_with('{') || rest.starts_with('['),
+        Err(_error) => false,
+    };
+}
+
 /// A value on a single line, leaving the line ending for the caller. Used by
 /// the `fieldMatch` and `exactMatch` assertion members.
 pub fn line_value() -> Parser<NovaValue> {
