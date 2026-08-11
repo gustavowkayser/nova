@@ -2,7 +2,7 @@ use crate::parser::nova::ast::*;
 use crate::parser::nova::lex::{
     blank_lines, eol, header_name, hspace, hspace1, ident, reference, template,
 };
-use crate::parser::nova::value::{body, NovaValue};
+use crate::parser::nova::value::{body, line_value, string_array, NovaValue};
 use crate::parser::parser::{ParseError, Parser};
 
 /// One statement, tagged with where it started.
@@ -16,6 +16,7 @@ pub fn statement() -> Parser<Statement> {
         host(),
         headers(),
         command(),
+        assert(),
         assign(),
         request(),
     ])
@@ -55,6 +56,87 @@ fn header_line() -> Parser<Header> {
         .then(template().label("a header value"))
         .ignore_right(eol())
         .map(|(name, value)| Header { name, value });
+}
+
+fn assert() -> Parser<StatementKind> {
+    let dot = Parser::<char>::char('.');
+
+    return marker("assert")
+        .ignore_left(dot.clone())
+        .ignore_left(ident().label("a request name"))
+        .ignore_right(dot)
+        .then(assertion())
+        .map(|(request, assertion)| StatementKind::Assert(Assert { request, assertion }));
+}
+
+/// The mode word decides the shape, so no lookahead is needed: `hasField` and
+/// `exactFields` take their list inline, the rest take member lines below.
+fn assertion() -> Parser<Assertion> {
+    let modes = vec![
+        inline_mode("hasField", Assertion::HasField),
+        inline_mode("exactFields", Assertion::ExactFields),
+        block_mode("typeOnly", type_line(), Assertion::TypeOnly),
+        block_mode("fieldMatch", match_line(), Assertion::FieldMatch),
+        block_mode("exactMatch", match_line(), Assertion::ExactMatch),
+    ];
+
+    return Parser::<Assertion>::choice(modes).label("an assertion mode");
+}
+
+fn inline_mode<F>(word: &'static str, build: F) -> Parser<Assertion>
+where
+    F: Fn(Vec<String>) -> Assertion + 'static,
+{
+    return exact_ident(word)
+        .ignore_right(hspace())
+        .ignore_left(string_array())
+        .ignore_right(eol())
+        .map(build);
+}
+
+fn block_mode<T, F>(word: &'static str, member: Parser<T>, build: F) -> Parser<Assertion>
+where
+    T: 'static,
+    F: Fn(Vec<T>) -> Assertion + 'static,
+{
+    return exact_ident(word)
+        .ignore_left(eol())
+        .ignore_left(blank_lines())
+        .ignore_left(member.ignore_right(blank_lines()).many1())
+        .map(build);
+}
+
+fn type_line() -> Parser<(String, TypeName)> {
+    return ident()
+        .ignore_right(Parser::<char>::char(':'))
+        .ignore_right(hspace())
+        .then(type_name())
+        .ignore_right(eol());
+}
+
+fn type_name() -> Parser<TypeName> {
+    let names = vec![
+        named_type("string", TypeName::String),
+        named_type("number", TypeName::Number),
+        named_type("boolean", TypeName::Boolean),
+        named_type("array", TypeName::Array),
+        named_type("object", TypeName::Object),
+        named_type("null", TypeName::Null),
+    ];
+
+    return Parser::<TypeName>::choice(names).label("a type name");
+}
+
+fn named_type(word: &'static str, name: TypeName) -> Parser<TypeName> {
+    return crate::parser::json_parser::keyword(word).apply_return(name);
+}
+
+fn match_line() -> Parser<(String, NovaValue)> {
+    return ident()
+        .ignore_right(Parser::<char>::char(':'))
+        .ignore_right(hspace())
+        .then(line_value())
+        .ignore_right(eol());
 }
 
 /// A request: an optional label line, a method-and-path line, an optional body.
@@ -406,5 +488,89 @@ mod tests {
             other => panic!("expected a request, got {other:?}"),
         }
         assert_eq!(remaining, "\n@assert.me.hasField [ \"email\" ]\n");
+    }
+
+    #[test]
+    fn parses_type_only_assertions() {
+        assert_eq!(
+            kind("@assert.login.typeOnly\naccessToken: string\n"),
+            StatementKind::Assert(Assert {
+                request: "login".to_string(),
+                assertion: Assertion::TypeOnly(vec![(
+                    "accessToken".to_string(),
+                    TypeName::String
+                )]),
+            })
+        );
+    }
+
+    #[test]
+    fn parses_every_type_name() {
+        let source = "@assert.r.typeOnly\na: string\nb: number\nc: boolean\nd: array\ne: object\nf: null\n";
+
+        assert_eq!(
+            kind(source),
+            StatementKind::Assert(Assert {
+                request: "r".to_string(),
+                assertion: Assertion::TypeOnly(vec![
+                    ("a".to_string(), TypeName::String),
+                    ("b".to_string(), TypeName::Number),
+                    ("c".to_string(), TypeName::Boolean),
+                    ("d".to_string(), TypeName::Array),
+                    ("e".to_string(), TypeName::Object),
+                    ("f".to_string(), TypeName::Null),
+                ]),
+            })
+        );
+    }
+
+    #[test]
+    fn parses_inline_field_lists() {
+        assert_eq!(
+            kind("@assert.me.hasField [ \"email\" ]\n"),
+            StatementKind::Assert(Assert {
+                request: "me".to_string(),
+                assertion: Assertion::HasField(vec!["email".to_string()]),
+            })
+        );
+        assert_eq!(
+            kind("@assert.me.exactFields [ \"email\", \"user_id\" ]\n"),
+            StatementKind::Assert(Assert {
+                request: "me".to_string(),
+                assertion: Assertion::ExactFields(vec![
+                    "email".to_string(),
+                    "user_id".to_string()
+                ]),
+            })
+        );
+    }
+
+    #[test]
+    fn parses_value_matching_assertions() {
+        assert_eq!(
+            kind("@assert.me.fieldMatch\nemail: \"john@example.com\"\n"),
+            StatementKind::Assert(Assert {
+                request: "me".to_string(),
+                assertion: Assertion::FieldMatch(vec![(
+                    "email".to_string(),
+                    NovaValue::String("john@example.com".to_string())
+                )]),
+            })
+        );
+        assert_eq!(
+            kind("@assert.me.exactMatch\nemail: \"a\"\nuser_id: \"1\"\n"),
+            StatementKind::Assert(Assert {
+                request: "me".to_string(),
+                assertion: Assertion::ExactMatch(vec![
+                    ("email".to_string(), NovaValue::String("a".to_string())),
+                    ("user_id".to_string(), NovaValue::String("1".to_string())),
+                ]),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_an_unknown_assertion_mode() {
+        assert!(statement().parse("@assert.me.nonsense\na: 1\n").is_err());
     }
 }
