@@ -109,7 +109,7 @@ fn member() -> Parser<(String, JsonValue)> {
 // --- Strings ---------------------------------------------------------------
 
 /// A quoted JSON string, with escape sequences resolved.
-fn string_literal() -> Parser<String> {
+pub(crate) fn string_literal() -> Parser<String> {
     let quote = Parser::<char>::char('"');
 
     return quote
@@ -205,7 +205,7 @@ fn hex_digit() -> Parser<char> {
 
 // --- Numbers ---------------------------------------------------------------
 
-fn number() -> Parser<f64> {
+pub(crate) fn number() -> Parser<f64> {
     let text = number_text();
 
     return Parser::<f64>::new(move |input| {
@@ -274,7 +274,7 @@ fn optional_char(found: Option<char>) -> String {
 
 /// A literal word that must not run into a following identifier character,
 /// so `nullable` is not accepted as `null`.
-fn keyword(expected: &'static str) -> Parser<String> {
+pub(crate) fn keyword(expected: &'static str) -> Parser<String> {
     let word = Parser::<char>::string(expected.to_string());
 
     return Parser::<String>::new(move |input| {
