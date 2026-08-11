@@ -3,6 +3,8 @@ pub mod lex;
 pub mod statement;
 pub mod value;
 
+mod acceptance;
+
 pub use ast::*;
 pub use value::NovaValue;
 
