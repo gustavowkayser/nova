@@ -1489,13 +1489,20 @@ Add inside the existing `mod tests` block in `src/parser/nova/statement.rs`:
         assert!(statement().parse("@login.auth.extra\nPOST /x\n").is_err());
     }
 
+    /// A body is optional, so the parser has to peek past the blank line to
+    /// decide whether one is there. It must not mistake the next statement for
+    /// one. The separating newline is left behind for `parse_nova` to consume.
     #[test]
     fn a_following_statement_is_not_swallowed_as_a_body() {
-        let (_parsed, remaining) = statement()
+        let (parsed, remaining) = statement()
             .parse("GET /me\n\n@assert.me.hasField [ \"email\" ]\n")
             .expect("statement should parse");
 
-        assert_eq!(remaining, "@assert.me.hasField [ \"email\" ]\n");
+        match parsed.kind {
+            StatementKind::Request(request) => assert_eq!(request.body, None),
+            other => panic!("expected a request, got {other:?}"),
+        }
+        assert_eq!(remaining, "\n@assert.me.hasField [ \"email\" ]\n");
     }
 ```
 
