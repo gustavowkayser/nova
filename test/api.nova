@@ -1,14 +1,7 @@
-# Test
+@host
 http://localhost:3000
 
-# Test commentary
+@header
+Content-Type: application/json
 
-GET /test
-
-POST /test
-{
-    "foo": true
-    "bar": 1
-}
-
-http://localhost:8000
+GET /foo

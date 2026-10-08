@@ -120,8 +120,7 @@ Rejected alternatives:
 Comments run from `//` to end of line.
 
 `#` cannot be the comment marker, because this specification uses it as a
-sigil (`#command`, `#auth.email`). The `README.md` examples currently use `#`
-for comments; the README is stale and needs a follow-up update.
+sigil (`#command`, `#auth.email`). The README now documents `//` comments.
 
 **A comment must be preceded by whitespace or start its line.** Without this
 rule, `@host` followed by `http://localhost:3000` parses as `http:` plus a
@@ -390,7 +389,5 @@ this work changes visibility in that file.
 
 ## Follow-up, not part of this work
 
-`README.md` documents an older syntax that contradicts this specification: a
-bare base URL and bare `Content-Type:` header with no `@host` / `@header`
-markers, and `#` used for comments. It should be brought in line in a separate
-commit.
+`README.md` has been updated to match this specification (`@host` / `@header`
+markers, `//` comments, assertions, commands).
