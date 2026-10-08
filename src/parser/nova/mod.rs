@@ -10,7 +10,7 @@ pub use value::NovaValue;
 
 use crate::parser::nova::lex::blank_lines;
 use crate::parser::nova::statement::statement;
-use crate::parser::parser::{ParseError, Parser};
+use crate::parser::parser::{ParseError};
 
 /// Parses a complete `.nova` document, rejecting any trailing input.
 pub fn parse_nova(input: &str) -> Result<Document, ParseError> {

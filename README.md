@@ -4,7 +4,7 @@
 
 Nova lets developers describe HTTP requests and assertions in plain `.nova` files, commit them to the repository, and run them as integration tests. The same files, and the same language, power a CLI and a TUI built for firing off HTTP queries quickly.
 
-> **Status:** early development. The language parser is implemented. The execution engine, CLI and TUI are not yet. See the [Roadmap](#roadmap).
+> **Status:** early development. The language parser and a literal-only HTTP runtime are implemented; references, assertions, CLI and TUI are not yet. See the [Roadmap](#roadmap).
 
 ---
 
@@ -73,7 +73,7 @@ GET /a//b // "/a//b" is the path, the rest is a comment
 
 ## Host
 
-`@host` sets the base URL for the requests that follow it.
+`@host` sets the base URL for the requests that follow it. A path on the host is a prefix: `@host` with `http://localhost:3000/api` and `GET /users` targets `http://localhost:3000/api/users`.
 
 ```nova
 @host
@@ -274,14 +274,14 @@ GET /me
                 +------------------+
 ```
 
-The parser is a pure syntax layer that produces a flat, ordered AST. The execution engine is responsible for resolving context (`@host`, `@header`), references, and evaluating assertions. See [`docs/superpowers/specs/2026-08-11-nova-parser-design.md`](docs/superpowers/specs/2026-08-11-nova-parser-design.md) for the parser design.
+The parser is a pure syntax layer that produces a flat, ordered AST. The runtime currently executes literal requests using positional `@host` and `@header` settings via the Rust library API (`parser::nova::parse_nova`, then `runtime::execute`). It rejects references, assignments, assertions, and commands before sending requests; their resolution/evaluation is future execution-engine work. See the [parser design](docs/superpowers/specs/2026-08-11-nova-parser-design.md) and [HTTP runtime design](docs/superpowers/specs/2026-10-08-nova-http-runtime-design.md).
 
 ---
 
 # Roadmap
 
 * [x] Nova language parser
-* [ ] HTTP execution engine
+* [x] HTTP execution for literal requests (library API; no CLI yet)
 * [ ] Assertion runner and test reporting
 * [ ] CLI (`nova run`)
 * [ ] Interactive TUI

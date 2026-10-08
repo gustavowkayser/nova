@@ -310,7 +310,7 @@ impl<T> Parser<T> {
         T: 'static,
         U: Clone + 'static
     {
-        return self.map(move |a| { return value.clone(); });
+        return self.map(move |_a| { return value.clone(); });
     }
 
     pub fn lift2<A, B, C, F>(
